@@ -53,11 +53,24 @@ namespace KosherLink
                 if (total > 0 && percent != null) percent((int)(done * 100 / total));
             });
 
+            CheckLooksLikeApk(apk);
             Log.Write("מתקין את וואטסאפ בטלפון הווירטואלי...");
             string o;
             Proc.Run(Paths.Adb, "-s " + Proc.Serial + " install -r -g \"" + apk + "\"", out o, 10 * 60 * 1000);
             if (!o.Contains("Success"))
                 throw new Exception("התקנת וואטסאפ נכשלה: " + o.Trim());
+
+            // Android itself only lets an update in if it is signed like the installed app, so the real risk is
+            // the first install. Check who signed what Android actually installed.
+            string signer = InstalledSigner();
+            if (signer != OfficialSigner)
+            {
+                if (!installed) Proc.Shell("pm uninstall " + Package);
+                File.Delete(apk);
+                throw new Exception("קובץ וואטסאפ שהורד לא חתום על ידי WhatsApp (" + (signer ?? "לא ידוע") + ") – " +
+                    (installed ? "בדוק את החיבור לאינטרנט" : "ההתקנה בוטלה"));
+            }
+            Log.Write("חתימת וואטסאפ אומתה (WhatsApp Inc.)");
 
             Config.Set("WaFingerprint", remote);
             File.Delete(apk);
@@ -65,6 +78,42 @@ namespace KosherLink
             Proc.Shell("cmd deviceidle whitelist +" + Package);
             Proc.Shell("cmd appops set " + Package + " RUN_ANY_IN_BACKGROUND allow");
             return true;
+        }
+
+        /// <summary>SHA-256 of WhatsApp Inc.'s signing certificate (CN=Brian Acton, O=WhatsApp Inc.), the same for every release.</summary>
+        public const string OfficialSigner = "3987d043d10aefaf5a8710b3671418fe57e0e19b653c9df82558feb5ffce5d44";
+
+        /// <summary>Rejects obviously wrong downloads (e.g. an HTML page instead of the app) before installing.</summary>
+        static void CheckLooksLikeApk(string apk)
+        {
+            var fi = new FileInfo(apk);
+            byte[] head = new byte[2];
+            using (var f = File.OpenRead(apk)) f.Read(head, 0, 2);
+            if (fi.Length < 20L * 1024 * 1024 || head[0] != 'P' || head[1] != 'K')
+            {
+                File.Delete(apk);
+                throw new Exception("מה שהורד מ־whatsapp.com הוא לא קובץ האפליקציה (" + Net.Mb(fi.Length) + "). ייתכן שסינון אינטרנט חוסם את ההורדה");
+            }
+        }
+
+        /// <summary>SHA-256 of the certificate that signed the installed WhatsApp, read from Android's package database.</summary>
+        public static string InstalledSigner()
+        {
+            Proc.Adb("-s " + Proc.Serial + " root", 30000); // the plain AOSP image allows this; the database is readable by root only
+            Proc.Adb("-s " + Proc.Serial + " wait-for-device", 60000);
+            string xml = Proc.Shell("cat /data/system/packages.xml");
+            var pkg = Regex.Match(xml, "<package name=\"" + Regex.Escape(Package) + "\".*?</package>", RegexOptions.Singleline);
+            if (!pkg.Success) return null;
+            var idx = Regex.Match(pkg.Value, "<sigs[^>]*>\\s*<cert index=\"(\\d+)\"");
+            if (!idx.Success) return null;
+            // the certificate itself is written once, at the first package that uses this index
+            var key = Regex.Match(xml, "<cert index=\"" + idx.Groups[1].Value + "\" key=\"([0-9a-fA-F]+)\"");
+            if (!key.Success) return null;
+            string hex = key.Groups[1].Value;
+            var der = new byte[hex.Length / 2];
+            for (int i = 0; i < der.Length; i++) der[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(der)).Replace("-", "").ToLowerInvariant();
         }
 
         public static void Launch()
@@ -129,14 +178,25 @@ namespace KosherLink
 
             string zip = Path.Combine(Paths.Downloads, "scrcpy.zip");
             Log.Write("מוריד את רכיב הצגת המסך (" + tag + ")...");
+            if (File.Exists(zip)) File.Delete(zip);
             Net.Download(m.Groups[1].Value, zip, null, (d, t) => { if (t > 0 && percent != null) percent((int)(d * 100 / t)); });
+            // GitHub publishes a SHA-256 for every release file: it sits in the same asset object, before its URL
+            int prevAsset = json.LastIndexOf("\"browser_download_url\"", Math.Max(0, m.Index - 1), StringComparison.Ordinal);
+            var dg = Regex.Match(json.Substring(prevAsset < 0 ? 0 : prevAsset + 1, m.Index - (prevAsset < 0 ? 0 : prevAsset + 1)),
+                "\"digest\"\\s*:\\s*\"sha256:([0-9a-fA-F]{64})\"");
+            if (!dg.Success) { File.Delete(zip); throw new Exception("לרכיב הצגת המסך אין חתימת SHA-256 ב־GitHub – לא מתקין"); }
+            if (!Net.Sha256(zip).Equals(dg.Groups[1].Value, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(zip);
+                throw new Exception("רכיב הצגת המסך שהורד לא עבר בדיקת תקינות");
+            }
             string tmp = Path.Combine(Paths.Root, "tmp-extract");
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             ZipFile.ExtractToDirectory(zip, tmp);
             var tops = Directory.GetDirectories(tmp);
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
             Directory.CreateDirectory(Paths.Tools);
-            Directory.Move(tops.Length == 1 ? tops[0] : tmp, dir);
+            Dirs.MoveRobust(tops.Length == 1 ? tops[0] : tmp, dir);
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             File.WriteAllText(Path.Combine(dir, ".kosherlink-rev"), tag);
             File.Delete(zip);
@@ -204,16 +264,34 @@ namespace KosherLink
     }
 
     /// <summary>
-    /// Self-update from the latest GitHub Release (config UpdateRepo, default KatzChaim/KosherLink):
-    /// the asset KosherLink.exe is downloaded and must match the SHA-256 digest GitHub publishes for it.
-    /// UpdateUrl may instead point to a JSON like {"version":"1.0.1","url":"...exe","sha256":"..."}.
+    /// Self-update from the latest GitHub Release (config UpdateRepo, default KatzChaim/KosherLink).
+    /// Two independent checks, both required:
+    ///  1. KosherLink.exe matches the SHA-256 digest GitHub publishes for it (complete, uncorrupted download);
+    ///  2. KosherLink.exe.sig is a valid RSA-SHA256 signature by the developer's private key, which never leaves
+    ///     the developer's PC (see publish.ps1). So even someone who takes over the GitHub account cannot
+    ///     push a program to the installations.
+    /// UpdateUrl may instead point to a JSON like {"version":"1.0.1","url":"...exe","sha256":"...","sig":"...base64"}.
     /// </summary>
     static class AppUpdater
     {
         public const string DefaultRepo = "KatzChaim/KosherLink";
         const string AssetName = "KosherLink.exe";
+        const string SigAssetName = "KosherLink.exe.sig";
 
-        public class Info { public string Version, Url, Sha256; }
+        /// <summary>Public half of the developer's update-signing key (the private half is in %USERPROFILE%\.kosherlink).</summary>
+        const string PublicKey = "<RSAKeyValue><Modulus>1N8YSJcMnvmY5ACHONCtw7WHLK1IJArR2maqYR9CLoFBmjqs2hEDA0w7Xobb/KnmJqerJfXDjl6RbjOWeEGca8yRrEag7MXGqsBWZXwCMSWPB8I50qSKr+NxHzL1BmYdzzbTYvXx+V0m8LVE5m1RAffHiLWquLlN5ZfhXuEMcM0AOjZJxNKesrtlVSWFwGuxHfA9uw4r+8K42UgyuD4UuHm0DMg/v+QfkTgICKd/adc3fLaUccEuwU1zVl8l39hD1N7MDEhCRfi99awi+2StuSHUKHw8id87xmhiAyape8h9mvQmAUGoKimSZQPQTliX7rXWU/1VSU6NQfqajQr7m/K2IjIWpoCBp/FCIhHSePOAyDyZhP3nssYaq/8cUQFrz1do/ykxMI2yDrQfPFYWXx3YPQcwFd8EMPfZCtLzA8/uWKZ2zsUl94Gq2rVOnapRBDDMMmix87eh/RcPoA8VhnriYQFT81EJ9b5NIF2pCQW2zN3K8qEl6lUed+xd6g8N</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>";
+
+        public class Info { public string Version, Url, Sha256, SigUrl, Sig; }
+
+        public static bool SignatureValid(string file, byte[] sig)
+        {
+            using (var rsa = new System.Security.Cryptography.RSACryptoServiceProvider())
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                rsa.FromXmlString(PublicKey);
+                return rsa.VerifyData(File.ReadAllBytes(file), sha, sig);
+            }
+        }
 
         /// <summary>Reads what the update source currently offers (null if nothing usable).</summary>
         public static Info Latest()
@@ -226,7 +304,8 @@ namespace KosherLink
                 {
                     Version = Field(j, "version"),
                     Url = Field(j, "url"),
-                    Sha256 = Field(j, "sha256")
+                    Sha256 = Field(j, "sha256"),
+                    Sig = Field(j, "sig")
                 };
             }
 
@@ -240,11 +319,13 @@ namespace KosherLink
             if (end < 0) return null;
             // from the asset's name up to (and including) its download URL
             string asset = json.Substring(start.Index, Math.Min(json.Length, end + 1000) - start.Index);
+            var sigUrl = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]*/" + Regex.Escape(SigAssetName) + ")\"");
             return new Info
             {
                 Version = Field(json, "tag_name").TrimStart('v', 'V'),
                 Url = Field(asset, "browser_download_url"),
-                Sha256 = Regex.Match(asset, "\"digest\"\\s*:\\s*\"sha256:([0-9a-fA-F]{64})\"").Groups[1].Value
+                Sha256 = Regex.Match(asset, "\"digest\"\\s*:\\s*\"sha256:([0-9a-fA-F]{64})\"").Groups[1].Value,
+                SigUrl = sigUrl.Success ? sigUrl.Groups[1].Value : ""
             };
         }
 
@@ -270,6 +351,18 @@ namespace KosherLink
             {
                 File.Delete(newExe);
                 throw new Exception("קובץ העדכון לא עבר בדיקת תקינות");
+            }
+            byte[] sig = null;
+            try
+            {
+                string b64 = !string.IsNullOrEmpty(i.Sig) ? i.Sig : (i.SigUrl.Length > 0 ? Net.GetString(i.SigUrl) : "");
+                if (b64.Trim().Length > 0) sig = Convert.FromBase64String(b64.Trim());
+            }
+            catch (FormatException) { }
+            if (sig == null || !SignatureValid(newExe, sig))
+            {
+                File.Delete(newExe);
+                throw new Exception("העדכון לא חתום בחתימה של המפתח – לא מתקין (" + (sig == null ? "אין חתימה" : "חתימה לא תקינה") + ")");
             }
             return newExe;
         }

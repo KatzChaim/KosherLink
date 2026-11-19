@@ -32,6 +32,13 @@ Step "בדיקות"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail "git לא מותקן" }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail "GitHub CLI (gh) לא מותקן" }
 if ((Invoke-Quiet gh.exe auth status) -ne 0) { Fail "לא מחובר ל־GitHub. הרץ: gh auth login" }
+# המפתח הפרטי לחתימת עדכונים. הוא נמצא רק במחשב הזה, לא ב־GitHub, וחובה לשמור ממנו גיבוי!
+$keyFile = Join-Path $env:USERPROFILE '.kosherlink\update-signing-key.xml'
+if (-not (Test-Path $keyFile)) { Fail "לא נמצא המפתח לחתימת עדכונים: $keyFile (שחזר אותו מהגיבוי)" }
+$k = New-Object Security.Cryptography.RSACryptoServiceProvider
+$k.FromXmlString([IO.File]::ReadAllText($keyFile))
+$publicXml = $k.ToXmlString($false)
+if (-not ([IO.File]::ReadAllText((Resolve-Path 'src\WhatsApp.cs'))).Contains($publicXml)) { Fail "המפתח הפרטי לא תואם למפתח הציבורי שבקוד (src\WhatsApp.cs). ההתקנות לא יקבלו עדכון חתום בו" }
 $branch = (& git.exe rev-parse --abbrev-ref HEAD).Trim()
 if ($branch -ne 'main') { Fail "צריך להיות על הענף main (כרגע: $branch)" }
 if ((Invoke-Quiet git.exe fetch -q origin main) -ne 0) { Fail "אין גישה ל־GitHub (git fetch נכשל)" }
@@ -73,6 +80,18 @@ $built = (Get-Item $exe).VersionInfo.FileVersion
 if ($built -notlike "$Version*") { Fail "הקובץ שנבנה הוא בגרסה $built ולא $Version" }
 $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
 
+# ---- 3א. חתימה במפתח הפרטי: ההתקנות מסרבות לקבל עדכון בלי חתימה תקינה
+Step "חותם"
+$sigFile = "$exe.sig"
+$rsa = New-Object Security.Cryptography.RSACryptoServiceProvider
+$rsa.FromXmlString([IO.File]::ReadAllText($keyFile))
+$sig = $rsa.SignData([IO.File]::ReadAllBytes((Resolve-Path $exe)), [Security.Cryptography.SHA256]::Create())
+[IO.File]::WriteAllText((Join-Path (Resolve-Path 'dist') 'KosherLink.exe.sig'), [Convert]::ToBase64String($sig))
+$check = New-Object Security.Cryptography.RSACryptoServiceProvider
+$check.FromXmlString($publicXml)
+if (-not $check.VerifyData([IO.File]::ReadAllBytes((Resolve-Path $exe)), [Security.Cryptography.SHA256]::Create(), $sig)) { Fail "בדיקת החתימה נכשלה" }
+Write-Host "   נחתם ואומת"
+
 # ---- 4. חבילת zip (התוכנה + הוראות)
 Step "מכין חבילה"
 $tmp = Join-Path $env:TEMP "kosherlink-pack"
@@ -104,7 +123,7 @@ $body += "**להורדה:** ``KosherLink.exe``, או ``KosherLink.zip`` שכול
 $body += "SHA-256 של ``KosherLink.exe``: ``$hash``"
 $notesFile = Join-Path $env:TEMP "kosherlink-notes.md"
 [IO.File]::WriteAllText($notesFile, $body, (New-Object Text.UTF8Encoding $false))
-& gh.exe release create "v$Version" $exe $zip --repo $repo --title "KosherLink $Version" --notes-file $notesFile --verify-tag
+& gh.exe release create "v$Version" $exe $sigFile $zip --repo $repo --title "KosherLink $Version" --notes-file $notesFile --verify-tag
 if ($LASTEXITCODE -ne 0) { Fail "יצירת ה־Release נכשלה (הקוד כבר הועלה, אפשר להריץ שוב רק את gh release create)" }
 Remove-Item $notesFile
 
@@ -114,5 +133,6 @@ $latest = (& gh.exe api "repos/$repo/releases/latest") -join "`n" | ConvertFrom-
 $digest = ($latest.assets | Where-Object { $_.name -eq 'KosherLink.exe' }).digest
 if ($latest.tag_name -ne "v$Version") { Fail "ב־GitHub הגרסה האחרונה היא $($latest.tag_name) ולא v$Version" }
 if ($digest -ne "sha256:$($hash.ToLower())") { Fail "ב־GitHub הקובץ האחרון לא תואם ($digest)" }
+if (-not ($latest.assets | Where-Object { $_.name -eq 'KosherLink.exe.sig' })) { Fail "קובץ החתימה לא הועלה ל־GitHub" }
 Write-Host "`nגרסה $Version פורסמה: https://github.com/$repo/releases/tag/v$Version" -ForegroundColor Green
 Write-Host "כל ההתקנות יתעדכנו לבד תוך יום. כדי לעדכן מיד: קליק ימני על הסמל ← בדוק עדכונים עכשיו."

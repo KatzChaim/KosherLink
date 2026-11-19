@@ -148,7 +148,7 @@ namespace KosherLink
 
             if (Directory.Exists(targetDir)) Directory.Delete(targetDir, true);
             Directory.CreateDirectory(Path.GetDirectoryName(targetDir));
-            Directory.Move(src, targetDir);
+            Dirs.MoveRobust(src, targetDir);
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             File.WriteAllText(RevFile(targetDir), pkg.Revision);
             File.Delete(zip); // keep the disk small

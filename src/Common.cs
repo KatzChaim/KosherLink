@@ -298,4 +298,31 @@ namespace KosherLink
 
         public static string Mb(long bytes) { return (bytes / 1024.0 / 1024.0).ToString("0") + "MB"; }
     }
+
+    static class Dirs
+    {
+        /// <summary>
+        /// Moves a freshly extracted folder into place. Antivirus software often holds new files open for a moment
+        /// while scanning them, so retry, and as a last resort copy instead of moving.
+        /// </summary>
+        public static void MoveRobust(string src, string dst)
+        {
+            for (int i = 0; ; i++)
+            {
+                try { Directory.Move(src, dst); return; }
+                catch (IOException) { if (i >= 5) break; }
+                catch (UnauthorizedAccessException) { if (i >= 5) break; }
+                System.Threading.Thread.Sleep(2000);
+            }
+            Copy(src, dst);
+            try { Directory.Delete(src, true); } catch { }
+        }
+
+        static void Copy(string src, string dst)
+        {
+            Directory.CreateDirectory(dst);
+            foreach (var f in Directory.GetFiles(src)) File.Copy(f, Path.Combine(dst, Path.GetFileName(f)), true);
+            foreach (var d in Directory.GetDirectories(src)) Copy(d, Path.Combine(dst, Path.GetFileName(d)));
+        }
+    }
 }
