@@ -174,34 +174,91 @@ namespace KosherLink
         }
     }
 
-    /// <summary>Optional self-update: set UpdateUrl in config.ini to a JSON like {"version":"1.0.1","url":"...exe","sha256":"..."}</summary>
+    /// <summary>
+    /// Self-update from the latest GitHub Release (config UpdateRepo, default KatzChaim/KosherLink):
+    /// the asset KosherLink.exe is downloaded and must match the SHA-256 digest GitHub publishes for it.
+    /// UpdateUrl may instead point to a JSON like {"version":"1.0.1","url":"...exe","sha256":"..."}.
+    /// </summary>
     static class AppUpdater
     {
-        public static bool CheckAndApply()
-        {
-            string url = Config.Get("UpdateUrl", "");
-            if (url.Length == 0) return false;
-            string json = Net.GetString(url);
-            string ver = Regex.Match(json, "\"version\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
-            string exeUrl = Regex.Match(json, "\"url\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
-            string sha = Regex.Match(json, "\"sha256\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
-            Version remote, local = new Version(Program.Version);
-            if (!Version.TryParse(ver, out remote) || remote <= local || exeUrl.Length == 0) return false;
+        public const string DefaultRepo = "KatzChaim/KosherLink";
+        const string AssetName = "KosherLink.exe";
 
-            Log.Write("נמצאה גרסה חדשה של התוכנה: " + ver);
-            string exe = Process.GetCurrentProcess().MainModule.FileName;
+        public class Info { public string Version, Url, Sha256; }
+
+        /// <summary>Reads what the update source currently offers (null if nothing usable).</summary>
+        public static Info Latest()
+        {
+            string custom = Config.Get("UpdateUrl", "");
+            if (custom.Length > 0)
+            {
+                string j = Net.GetString(custom);
+                return new Info
+                {
+                    Version = Field(j, "version"),
+                    Url = Field(j, "url"),
+                    Sha256 = Field(j, "sha256")
+                };
+            }
+
+            string repo = Config.Get("UpdateRepo", DefaultRepo);
+            if (repo.Length == 0) return null;
+            string json = Net.GetString("https://api.github.com/repos/" + repo + "/releases/latest");
+            // the asset object: "name":"KosherLink.exe", ..., "digest":"sha256:...", ..., "browser_download_url":"..."
+            var start = Regex.Match(json, "\"name\"\\s*:\\s*\"" + Regex.Escape(AssetName) + "\"");
+            if (!start.Success) return null;
+            int end = json.IndexOf("\"browser_download_url\"", start.Index, StringComparison.Ordinal);
+            if (end < 0) return null;
+            // from the asset's name up to (and including) its download URL
+            string asset = json.Substring(start.Index, Math.Min(json.Length, end + 1000) - start.Index);
+            return new Info
+            {
+                Version = Field(json, "tag_name").TrimStart('v', 'V'),
+                Url = Field(asset, "browser_download_url"),
+                Sha256 = Regex.Match(asset, "\"digest\"\\s*:\\s*\"sha256:([0-9a-fA-F]{64})\"").Groups[1].Value
+            };
+        }
+
+        static string Field(string json, string name)
+        {
+            return Regex.Match(json, "\"" + name + "\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
+        }
+
+        public static bool IsNewer(Info i)
+        {
+            Version remote;
+            return i != null && i.Url.Length > 0 && Version.TryParse(i.Version, out remote) && remote > new Version(Program.Version);
+        }
+
+        /// <summary>Downloads the update next to <paramref name="exe"/> as .new and verifies it. Returns the .new path.</summary>
+        public static string Download(Info i, string exe)
+        {
+            if (i.Sha256.Length != 64) throw new Exception("לעדכון אין חתימת SHA-256 – לא מתקין");
             string newExe = exe + ".new";
-            Net.Download(exeUrl, newExe, null, null);
-            if (sha.Length > 0 && !Net.Sha256(newExe).Equals(sha, StringComparison.OrdinalIgnoreCase))
+            if (File.Exists(newExe)) File.Delete(newExe);
+            Net.Download(i.Url, newExe, null, null);
+            if (!Net.Sha256(newExe).Equals(i.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(newExe);
                 throw new Exception("קובץ העדכון לא עבר בדיקת תקינות");
             }
+            return newExe;
+        }
+
+        public static bool CheckAndApply()
+        {
+            var i = Latest();
+            if (!IsNewer(i)) return false;
+
+            Log.Write("נמצאה גרסה חדשה של התוכנה: " + i.Version + " – מוריד...");
+            string exe = Process.GetCurrentProcess().MainModule.FileName;
+            string newExe = Download(i, exe);
             // Windows allows renaming a running program: keep the old one aside, put the new one in place.
             string oldExe = exe + ".old";
             if (File.Exists(oldExe)) File.Delete(oldExe);
             File.Move(exe, oldExe);
             File.Move(newExe, exe);
+            Log.Write("התוכנה עודכנה לגרסה " + i.Version + " – מפעיל מחדש");
             Process.Start(exe, "--tray --after-update");
             return true; // caller exits the app; the new version deletes the .old file
         }
