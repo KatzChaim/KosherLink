@@ -12,22 +12,22 @@ namespace KosherLink
 {
     static class Program
     {
-        public const string Version = "1.0.7";
+        public const string Version = "1.0.8";
         public const string AppName = "KosherLink";
 
         [STAThread]
         static void Main(string[] args)
         {
-            // Filter-certificate installer: "--filter NetFree", "--filter file.crt", or a copy of the program named
-            // KosherLink-filter-NetFree.exe (that is what the per-filter downloads on GitHub are).
+            // Filter-certificate window: "--filter", "--filter NetFree" (pre-selected), "--filter file.crt", or a copy of the
+            // program whose name contains "filter" (KosherLink-Filter.exe on GitHub; KosherLink-filter-NetFree.exe pre-selects).
             int fi = Array.IndexOf(args, "--filter");
             var named = System.Text.RegularExpressions.Regex.Match(
                 System.IO.Path.GetFileNameWithoutExtension(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                @"filter-([A-Za-z]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                @"filter(?:-([A-Za-z]+))?", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (fi >= 0 || named.Success)
             {
                 Application.EnableVisualStyles();
-                FilterInstaller.Run(fi >= 0 && fi + 1 < args.Length ? args[fi + 1] : named.Success ? named.Groups[1].Value : "");
+                FilterInstaller.Run(fi >= 0 && fi + 1 < args.Length ? args[fi + 1] : named.Groups[1].Value);
                 return;
             }
 
@@ -47,9 +47,7 @@ namespace KosherLink
                 catch { }
                 if (!created)
                 {
-                    MessageBox.Show("התוכנה כבר פועלת – חפש את הסמל שלה ליד השעון.", AppName,
-                        MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1,
-                        MessageBoxOptions.RightAlign | MessageBoxOptions.RtlReading);
+                    Msg("התוכנה כבר פועלת – חפש את הסמל שלה ליד השעון.", MessageBoxIcon.Information);
                     return;
                 }
                 Application.EnableVisualStyles();
@@ -77,8 +75,45 @@ namespace KosherLink
 
         public static void Msg(string text, MessageBoxIcon icon)
         {
-            MessageBox.Show(text, AppName, MessageBoxButtons.OK, icon, MessageBoxDefaultButton.Button1,
-                MessageBoxOptions.RightAlign | MessageBoxOptions.RtlReading);
+            Dialog(null, text, icon, "אישור", null);
+        }
+
+        /// <summary>Yes/No question with Hebrew buttons (Windows' own MessageBox uses the Windows language, often English).</summary>
+        public static bool Ask(string text, MessageBoxIcon icon = MessageBoxIcon.Question, IWin32Window owner = null)
+        {
+            return Dialog(owner, text, icon, "כן", "לא");
+        }
+
+        static bool Dialog(IWin32Window owner, string text, MessageBoxIcon icon, string ok, string cancel)
+        {
+            using (var f = new Form
+            {
+                Text = AppName, RightToLeft = RightToLeft.Yes, RightToLeftLayout = true, Font = new Font("Segoe UI", 10f),
+                AutoScaleMode = AutoScaleMode.Dpi, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                ShowInTaskbar = owner == null, StartPosition = owner == null ? FormStartPosition.CenterScreen : FormStartPosition.CenterParent,
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Color.White, TopMost = owner == null
+            })
+            {
+                var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Padding = new Padding(16, 16, 16, 8) };
+                Icon sys = icon == MessageBoxIcon.Error ? SystemIcons.Error : icon == MessageBoxIcon.Warning ? SystemIcons.Warning
+                         : icon == MessageBoxIcon.Information ? SystemIcons.Information : SystemIcons.Question;
+                grid.Controls.Add(new PictureBox { Image = sys.ToBitmap(), SizeMode = PictureBoxSizeMode.AutoSize, Margin = new Padding(0, 0, 0, 0) }, 0, 0);
+                grid.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(440, 0), Margin = new Padding(12, 4, 0, 12) }, 1, 0);
+                var buttons = new FlowLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 4, 0, 4) };
+                var bOk = new Button { Text = ok, DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(90, 0), Padding = new Padding(6, 2, 6, 2) };
+                buttons.Controls.Add(bOk);
+                f.AcceptButton = bOk;
+                if (cancel != null)
+                {
+                    var bNo = new Button { Text = cancel, DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(90, 0), Padding = new Padding(6, 2, 6, 2) };
+                    buttons.Controls.Add(bNo);
+                    f.CancelButton = bNo;
+                }
+                else f.CancelButton = bOk;
+                grid.Controls.Add(buttons, 1, 1);
+                f.Controls.Add(grid);
+                return (owner == null ? f.ShowDialog() : f.ShowDialog(owner)) == DialogResult.OK;
+            }
         }
     }
 
@@ -186,35 +221,7 @@ namespace KosherLink
                 System.IO.Directory.CreateDirectory(Backup.Dir); Process.Start("explorer.exe", "\"" + Backup.Dir + "\"");
             });
             menu.Items.Add(backup);
-            var filter = new ToolStripMenuItem("תעודת סינון אינטרנט");
-            filter.DropDown.RightToLeft = RightToLeft.Yes;
-            var filterStatus = new ToolStripMenuItem("") { Enabled = false };
-            var filterAuto = new ToolStripMenuItem("זיהוי אוטומטי של תעודת הסינון מהמחשב", null, (s, e) =>
-            {
-                FilterCert.AutoDetect = !FilterCert.AutoDetect;
-                if (FilterCert.AutoDetect) Job("תעודת סינון", FilterCert.EnsureApplied);
-            });
-            filter.DropDownItems.Add(filterStatus);
-            filter.DropDownItems.Add(filterAuto);
-            filter.DropDownItems.Add("חפש והתקן עכשיו", null, (s, e) => Sta(() => FilterInstaller.Run("")));
-            filter.DropDownItems.Add("התקן מקובץ תעודה...", null, (s, e) => Sta(() =>
-            {
-                string f = FilterInstaller.PickFile();
-                if (f != null) FilterInstaller.Run(f);
-            }));
-            filter.DropDownItems.Add(new ToolStripSeparator());
-            filter.DropDownItems.Add("הסר את תעודות הסינון מהטלפון", null, (s, e) => Job("הסרת תעודת סינון", () =>
-            {
-                FilterCert.RemoveAll();
-                Notify("תעודות הסינון הוסרו, והזיהוי האוטומטי כובה.");
-            }));
-            filter.DropDown.Opening += (s, e) =>
-            {
-                string d = FilterCert.Describe();
-                filterStatus.Text = d.Length > 0 ? "מותקנת: " + d : "אין תעודת סינון";
-                filterAuto.Checked = FilterCert.AutoDetect;
-            };
-            menu.Items.Add(filter);
+            menu.Items.Add("תעודת סינון אינטרנט...", null, (s, e) => Sta(() => FilterInstaller.Run("")));
             menu.Items.Add("אשף התקנה ורישום", null, (s, e) => ShowSetup());
             _autoStart = new ToolStripMenuItem("הפעל אוטומטית עם Windows", null, (s, e) =>
             {
@@ -288,8 +295,9 @@ namespace KosherLink
             SetStatus("מפעיל את הטלפון הווירטואלי...", _iconBusy);
             Emulator.Start();
             if (!Emulator.WaitBoot(600)) throw new Exception("הטלפון הווירטואלי לא עלה");
-            if (!wasRunning) Emulator.Tune(); else { Emulator.LowerPriority(); FilterCert.EnsureApplied(); }
+            if (!wasRunning) Emulator.Tune(); else Emulator.LowerPriority();
             SetStatus("פועל", _iconOk);
+            Sta(FilterInstaller.OfferOnce); // asks once ever, only if Windows has a filter certificate
             DoUpdates(false);
         }
 
@@ -314,7 +322,6 @@ namespace KosherLink
         }
 
         bool _staleWarned;
-        DateTime _lastCertCheck = DateTime.MinValue;
 
         /// <summary>Runs work that shows dialogs (file picker) on its own STA thread, so the tray stays responsive.</summary>
         static void Sta(Action a)
@@ -328,8 +335,7 @@ namespace KosherLink
         bool Confirm(string text)
         {
             bool yes = false;
-            _ui.Invoke((Action)(() => yes = MessageBox.Show(text, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign) == DialogResult.Yes));
+            _ui.Invoke((Action)(() => yes = Program.Ask(text)));
             return yes;
         }
 
@@ -360,11 +366,6 @@ namespace KosherLink
                 {
                     Emulator.LowerPriority();
                     DoUpdates(false);
-                    if (Emulator.IsBooted && DateTime.Now - _lastCertCheck > TimeSpan.FromMinutes(30))
-                    {
-                        _lastCertCheck = DateTime.Now;
-                        FilterCert.EnsureApplied();
-                    }
                     if (Backup.Due && Emulator.IsBooted)
                     {
                         try { Backup.Run(); }
@@ -389,11 +390,9 @@ namespace KosherLink
 
         void FullBackup()
         {
-            if (MessageBox.Show(
+            if (!Program.Ask(
                     "גיבוי מלא מעתיק את כל הטלפון הווירטואלי (כ־8GB) אל:\n" + Backup.Dir +
-                    "\n\nבזמן הגיבוי (כמה דקות) הטלפון כבוי, אבל וואטסאפ במחשב ממשיך לעבוד.\nלהמשיך?",
-                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1,
-                    MessageBoxOptions.RightAlign | MessageBoxOptions.RtlReading) != DialogResult.Yes) return;
+                    "\n\nבזמן הגיבוי (כמה דקות) הטלפון כבוי, אבל וואטסאפ במחשב ממשיך לעבוד.\nלהמשיך?")) return;
             Job("גיבוי מלא", () =>
             {
                 SetStatus("מגבה את כל הטלפון...", _iconBusy);

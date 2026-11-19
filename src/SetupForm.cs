@@ -14,7 +14,7 @@ namespace KosherLink
 
         readonly Label[] _steps = new Label[5];
         readonly CheckBox _license;
-        readonly Button _btnInstall, _btnRestore, _btnPhone, _btnDesktop, _btnFinish;
+        readonly Button _btnInstall, _btnRestore, _btnFilter, _btnPhone, _btnDesktop, _btnFinish;
         readonly Label _help;
         readonly ProgressBar _progress;
         readonly TextBox _log;
@@ -78,7 +78,8 @@ namespace KosherLink
             _btnDesktop = Btn("ג. חיבור וואטסאפ למחשב");
             _btnFinish = Btn("סיום");
             _btnRestore = Btn("שחזור גיבוי");
-            buttons.Controls.AddRange(new Control[] { _btnInstall, _btnRestore, _btnPhone, _btnDesktop, _btnFinish });
+            _btnFilter = Btn("תעודת סינון (למי שיש סינון)");
+            buttons.Controls.AddRange(new Control[] { _btnInstall, _btnRestore, _btnFilter, _btnPhone, _btnDesktop, _btnFinish });
             root.Controls.Add(buttons);
 
             _help = new Label
@@ -104,6 +105,7 @@ namespace KosherLink
             _btnInstall.Click += (s, e) => RunInstall();
             _btnPhone.Click += (s, e) => StartRegistration();
             _btnRestore.Click += (s, e) => RestoreBackup();
+            _btnFilter.Click += (s, e) => { using (var f = new FilterForm(null)) f.ShowDialog(this); };
             _btnDesktop.Click += (s, e) => LinkDesktop();
             _btnFinish.Click += (s, e) => Finish();
 
@@ -116,10 +118,11 @@ namespace KosherLink
             if (Config.GetBool("SetupDone")) SetStep(4, "✅");
             _btnPhone.Enabled = ready;
             _btnRestore.Enabled = ready;
+            _btnFilter.Enabled = ready;
             _btnDesktop.Enabled = ready;
             _btnFinish.Enabled = ready;
             _help.Text = ready
-                ? "הרכיבים כבר מותקנים. אפשר להמשיך לשלב ב׳ (רישום) או ג׳ (חיבור למחשב)."
+                ? "הרכיבים כבר מותקנים. אפשר להמשיך לשלב ב׳ (רישום) או ג׳ (חיבור למחשב).\nהמחשב גולש דרך סינון? לחץ קודם על \"תעודת סינון\"."
                 : "סמן את ההסכמה לתנאי הרישיון ולחץ \"א. התקנה אוטומטית\". ההורדה וההתקנה לוקחות כמה דקות, תלוי במהירות האינטרנט.";
         }
 
@@ -208,9 +211,10 @@ namespace KosherLink
                     Log.Write("ההתקנה הושלמה!");
                     BeginInvoke((Action)(() =>
                     {
-                        _btnPhone.Enabled = _btnRestore.Enabled = _btnDesktop.Enabled = _btnFinish.Enabled = true;
+                        _btnPhone.Enabled = _btnRestore.Enabled = _btnFilter.Enabled = _btnDesktop.Enabled = _btnFinish.Enabled = true;
                         _help.Text = "ההתקנה הושלמה ✔  עכשיו לחץ \"ב. רישום (שיחה קולית)\".\n" +
-                                     "יש לך גיבוי ממחשב קודם? לחץ קודם על \"שחזור גיבוי\".";
+                                     "יש לך גיבוי ממחשב קודם? לחץ קודם על \"שחזור גיבוי\". המחשב גולש דרך סינון? לחץ קודם על \"תעודת סינון\".";
+                        FilterInstaller.OfferOnce(); // before registering: a filter may block it without the certificate
                     }));
                 }
                 catch (Exception ex)
@@ -228,13 +232,10 @@ namespace KosherLink
         {
             _btnInstall.Enabled = true;
             _help.Text = "כדי שהטלפון הווירטואלי ירוץ קל ומהר צריך להפעיל ב־Windows את הרכיב \"Windows Hypervisor Platform\".";
-            var r = MessageBox.Show(
+            if (!Program.Ask(
                 "המחשב צריך את הרכיב \"Windows Hypervisor Platform\" (רכיב רשמי של Windows).\n\n" +
                 "ללחוץ \"כן\" כדי לפתוח את חלון \"תכונות Windows\"? שם מסמנים את \"Windows Hypervisor Platform\" (פלטפורמת Hypervisor של Windows), לוחצים אישור, מפעילים מחדש את המחשב ומריצים שוב את ההתקנה.\n\n" +
-                "אם זה לא עוזר, ייתכן שצריך להפעיל Virtualization (VT-x) ב־BIOS.\n\nפרטים טכניים:\n" + details.Trim(),
-                Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1,
-                MessageBoxOptions.RightAlign | MessageBoxOptions.RtlReading);
-            if (r != DialogResult.Yes) return;
+                "אם זה לא עוזר, ייתכן שצריך להפעיל Virtualization (VT-x) ב־BIOS.\n\nפרטים טכניים:\n" + details.Trim(), MessageBoxIcon.Warning, this)) return;
             // the standard Windows dialog - the user ticks the feature themselves
             try { Process.Start("optionalfeatures.exe"); }
             catch (Exception ex) { Log.Write("פתיחת תכונות Windows נכשלה: " + ex.Message); }
@@ -250,9 +251,7 @@ namespace KosherLink
                     MessageBoxIcon.Information);
                 return;
             }
-            if (MessageBox.Show("לשחזר את הגיבוי מ־" + Path.GetFileName(snap) + "?\n\nעושים את זה לפני הרישום. אחרי האימות בשיחה, וואטסאפ יציע \"שחזור\" – לחץ עליו.",
-                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1,
-                    MessageBoxOptions.RightAlign | MessageBoxOptions.RtlReading) != DialogResult.Yes) return;
+            if (!Program.Ask("לשחזר את הגיבוי מ־" + Path.GetFileName(snap) + "?\n\nעושים את זה לפני הרישום. אחרי האימות בשיחה, וואטסאפ יציע \"שחזור\" – לחץ עליו.", MessageBoxIcon.Question, this)) return;
             _btnRestore.Enabled = false;
             Task.Run(() =>
             {
@@ -286,7 +285,6 @@ namespace KosherLink
                     if (!Emulator.WaitBoot(600)) throw new Exception("הטלפון הווירטואלי לא עלה");
                     if (!wasRunning) Emulator.Tune();
                     if (!PhoneViewer.IsInstalled) PhoneViewer.Install(null);
-                    FilterCert.EnsureApplied();
                     PhoneViewer.Show();
                     SetStep(4, "⏳");
                 }

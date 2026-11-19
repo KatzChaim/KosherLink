@@ -11,31 +11,50 @@ namespace KosherLink
 {
     /// <summary>
     /// Internet filters (NetFree, Netspark, Etrog, Rimon...) inspect HTTPS with their own root certificate.
-    /// Whoever is behind such a filter already has that certificate in Windows, so we find it there (or take a
-    /// file the user picks / the filter's official download) and add it to the virtual phone's system
-    /// certificate store. Android 11 reads /system/etc/security/cacerts; a tmpfs is mounted over it with the
-    /// original certificates plus ours, re-applied after every cold boot (a quick-boot snapshot keeps it).
+    /// Nothing here runs by itself: the user picks the filter in FilterForm, and its certificate is taken from
+    /// Windows (where the filter installed it), from the filter's official download, or from a file the user picks,
+    /// and added to the virtual phone's system store. Android 11 reads /system/etc/security/cacerts (read-only),
+    /// so a tmpfs is mounted over it with the original certificates plus ours. The quick-boot snapshot keeps it;
+    /// after a rare full restart of the phone it is gone, and the window shows that so the user can install again.
     /// </summary>
     static class FilterCert
     {
         public class Filter
         {
-            public string Id, Name, Pattern, Url;
-            public Filter(string id, string name, string pattern, string url) { Id = id; Name = name; Pattern = pattern; Url = url; }
+            public string Id, Name, Pattern, Url, Embedded;
+            public Filter(string id, string name, string pattern, string url, string embedded)
+            { Id = id; Name = name; Pattern = pattern; Url = url; Embedded = embedded; }
+            public bool Matches(X509Certificate2 c) { return Regex.IsMatch(c.Subject, Pattern, RegexOptions.IgnoreCase); }
         }
 
-        /// <summary>Known filters: how their certificate is named, and the official download when there is one.</summary>
+        /// <summary>
+        /// Known filters: how their certificate is named in Windows, the official download (tried first, NetFree only),
+        /// and the copy shipped in the program (EmbeddedCerts). Rimon, Netspark and Etrog share one certificate.
+        /// </summary>
         public static readonly Filter[] Known =
         {
-            new Filter("NetFree", "נטפרי", @"\bNetFree\b", "https://netfree.link/cacert/united/x2/root_ca_x2_bundle.crt"),
-            new Filter("Netspark", "נטספארק", @"Netspark", null),
-            new Filter("Etrog", "אתרוג", @"Etrog", null),
-            new Filter("Rimon", "רימון", @"Rimon", null),
-            new Filter("Noam", "נועם", @"\bNoam", null),
-            new Filter("Nativ", "נתיב", @"Nativ|Netiv", null),
-            new Filter("Moreshet", "מורשת", @"Moreshet", null),
-            new Filter("Yesh", "ישרנט", @"Yasharnet|Yashar", null),
+            new Filter("NetFree", "נטפרי", @"\bNetFree\b", "https://netfree.link/cacert/united/x2/root_ca_x2_bundle.crt", EmbeddedCerts.NetFree),
+            new Filter("Netspark", "נטספארק", @"Netspark", null, EmbeddedCerts.NetsparkRim),
+            new Filter("Rimon", "רימון", @"Netspark RIM|Rimon", null, EmbeddedCerts.NetsparkRim),
+            new Filter("Etrog", "אתרוג", @"Netspark RIM|Etrog", null, EmbeddedCerts.NetsparkRim),
+            new Filter("Noam", "נועם", @"\bNoam", null, null),
+            new Filter("Nativ", "נתיב", @"Nativ|Netiv", null, null),
+            new Filter("Moreshet", "מורשת", @"Moreshet", null, null),
+            new Filter("Yesh", "ישרנט", @"Yasharnet|Yashar", null, null),
         };
+
+        /// <summary>The certificates shipped in the program for this filter (empty if none).</summary>
+        public static List<X509Certificate2> Builtin(Filter f)
+        {
+            return f.Embedded == null ? new List<X509Certificate2>() : Parse(Encoding.ASCII.GetBytes(f.Embedded)).Where(f.Matches).ToList();
+        }
+
+        /// <summary>What the user chose, shown in the window (kept next to the certificates, not in config.ini).</summary>
+        public static string Choice
+        {
+            get { string p = Path.Combine(Dir, "choice.txt"); return File.Exists(p) ? File.ReadAllText(p).Trim() : ""; }
+            set { Directory.CreateDirectory(Dir); File.WriteAllText(Path.Combine(Dir, "choice.txt"), value ?? ""); }
+        }
 
         const string PhoneDir = "/data/local/tmp/kl-certs";
         const string SysDir = "/system/etc/security/cacerts";
@@ -43,18 +62,12 @@ namespace KosherLink
         /// <summary>Certificates waiting on the PC to be put in the phone (Android file names: &lt;hash&gt;.N).</summary>
         public static string Dir { get { return Path.Combine(Paths.Root, "filter-certs"); } }
 
-        public static bool AutoDetect
-        {
-            get { return Config.Get("FilterAuto", "1") == "1"; }
-            set { Config.SetBool("FilterAuto", value); }
-        }
-
         public static Filter Find(string idOrName)
         {
             return Known.FirstOrDefault(f => f.Id.Equals(idOrName, StringComparison.OrdinalIgnoreCase) || f.Name == idOrName);
         }
 
-        static Filter Owner(X509Certificate2 c)
+        public static Filter Owner(X509Certificate2 c)
         {
             return Known.FirstOrDefault(f => Regex.IsMatch(c.Subject, f.Pattern, RegexOptions.IgnoreCase));
         }
@@ -71,8 +84,8 @@ namespace KosherLink
                     store.Open(OpenFlags.ReadOnly);
                     foreach (var c in store.Certificates)
                     {
-                        var f = Owner(c);
-                        if (f != null && (only == null || only == f) && !res.Any(x => x.Thumbprint == c.Thumbprint)) res.Add(c);
+                        bool match = only != null ? only.Matches(c) : Owner(c) != null;
+                        if (match && !res.Any(x => x.Thumbprint == c.Thumbprint)) res.Add(c);
                     }
                 }
                 catch { }
@@ -155,6 +168,7 @@ namespace KosherLink
         /// <summary>Names of the saved certificates, for the menu ("נטספארק", or the certificate's own name).</summary>
         public static string Describe()
         {
+            if (Saved.Length > 0 && Choice.Length > 0) return Choice;
             var names = new List<string>();
             foreach (var f in Saved)
             {
@@ -175,15 +189,9 @@ namespace KosherLink
             Directory.CreateDirectory(Paths.Downloads);
             if (File.Exists(tmp)) File.Delete(tmp);
             Net.Download(f.Url, tmp, null, null);
-            var certs = Parse(File.ReadAllBytes(tmp)).Where(c => Owner(c) == f).ToList(); // only that filter's own CAs
+            var certs = Parse(File.ReadAllBytes(tmp)).Where(f.Matches).ToList(); // only that filter's own CAs
             File.Delete(tmp);
             return certs;
-        }
-
-        /// <summary>Looks in Windows for filter certificates and saves new ones (when automatic detection is on).</summary>
-        public static int DetectAndSave()
-        {
-            return AutoDetect ? Save(InWindows()) : 0;
         }
 
         /// <summary>
@@ -236,34 +244,34 @@ namespace KosherLink
             return Proc.Shell("sh /data/local/tmp/kl-script.sh");
         }
 
-        /// <summary>Removes our certificates from the phone and the PC, and turns automatic detection off.</summary>
-        public static void RemoveAll()
+        /// <summary>Removes the certificates we installed, from the phone (if it is running) and from the PC.</summary>
+        public static void Clear()
         {
             var files = Saved;
-            AutoDetect = false;
-            if (Emulator.IsRunning && Emulator.IsBooted && files.Length > 0)
+            if (files.Length == 0) return;
+            if (AndroidSdk.AvdExists() && Emulator.IsRunning && Emulator.IsBooted)
             {
                 Proc.Root();
                 RunScript("for f in " + string.Join(" ", files.Select(Path.GetFileName)) + "; do rm -f " + SysDir + "/$f; done\nrm -rf " + PhoneDir);
             }
             foreach (var f in files) File.Delete(f);
+            Choice = "";
             Log.Write("תעודות הסינון הוסרו");
         }
 
-        /// <summary>Detect + apply, for the periodic checks. Never throws.</summary>
-        public static void EnsureApplied()
+        /// <summary>
+        /// Whether the chosen certificates are really in the phone right now (they disappear after a full restart
+        /// of the phone; the user then installs again from the window). Null when the phone is not running.
+        /// </summary>
+        public static bool? OnPhone()
         {
-            try
-            {
-                DetectAndSave();
-                if (Apply() && WhatsAppAndroid.IsInstalled)
-                {
-                    // WhatsApp read the old certificate list when it started
-                    Proc.Shell("am force-stop " + WhatsAppAndroid.Package);
-                    WhatsAppAndroid.Launch();
-                }
-            }
-            catch (Exception ex) { Log.Write("תעודת סינון: " + ex.Message); }
+            var files = Saved;
+            if (files.Length == 0) return false;
+            if (!AndroidSdk.AvdExists() || !Emulator.IsRunning || !Emulator.IsBooted) return null;
+            Proc.Root();
+            string n = RunScript("cd " + SysDir + " && ls " + string.Join(" ", files.Select(Path.GetFileName)) + " 2>/dev/null | wc -l");
+            int present;
+            return int.TryParse(n.Trim(), out present) && present == files.Length;
         }
     }
 }
