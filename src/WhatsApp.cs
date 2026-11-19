@@ -29,7 +29,8 @@ namespace KosherLink
         }
 
         /// <summary>Checks whatsapp.com for a newer build and installs it. Returns true if something was installed.</summary>
-        public static bool Update(bool force, Action<int> percent)
+        /// <param name="confirm">Asked before an update (not a first install); returning false skips it until the next check.</param>
+        public static bool Update(bool force, Action<int> percent, Func<bool> confirm = null)
         {
             string remote = Net.Fingerprint(ApkUrl);
             Config.Set("WaLastCheck", DateTime.UtcNow.ToString("o"));
@@ -37,6 +38,11 @@ namespace KosherLink
             if (!force && installed && remote == Config.Get("WaFingerprint", ""))
             {
                 Log.Write("וואטסאפ מעודכן (" + InstalledVersion + ")");
+                return false;
+            }
+            if (installed && confirm != null && !confirm())
+            {
+                Log.Write("יש גרסת וואטסאפ חדשה – המשתמש בחר לא לעדכן עכשיו");
                 return false;
             }
 
@@ -146,10 +152,30 @@ namespace KosherLink
             var psi = Proc.Psi(Paths.Scrcpy,
                 "-s " + Proc.Serial + " --no-audio --max-fps 30 --video-bit-rate 4M --stay-awake"
                 + " --window-title \"KosherLink - הטלפון הווירטואלי\"");
-            _proc = Process.Start(psi);
-            _proc.EnableRaisingEvents = true;
-            _proc.Exited += (s, e) => { try { Emulator.ScreenOff(); } catch { } };
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.StandardOutputEncoding = psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
+            var output = new System.Collections.Generic.List<string>();
+            DataReceivedEventHandler collect = (s, e) => { if (e.Data != null) lock (output) output.Add(e.Data); };
+            var p = Process.Start(psi);
+            p.OutputDataReceived += collect;
+            p.ErrorDataReceived += collect;
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            p.EnableRaisingEvents = true;
+            p.Exited += (s, e) =>
+            {
+                try { Emulator.ScreenOff(); } catch { }
+                try { lock (output) File.WriteAllLines(Path.Combine(Paths.Root, "scrcpy.log"), output); } catch { }
+            };
+            _proc = p;
             BringToFront();
+            if (p.WaitForExit(3000) && p.ExitCode != 0)
+            {
+                string last;
+                lock (output) last = string.Join(" | ", output.FindAll(l => l.Contains("ERROR") || l.Contains("WARN")));
+                throw new Exception("חלון הטלפון נסגר מיד (קוד " + p.ExitCode + ")" + (last.Length > 0 ? ": " + last : ""));
+            }
         }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
@@ -158,11 +184,14 @@ namespace KosherLink
         /// <summary>Makes sure the phone window is not hidden behind other windows.</summary>
         public static void BringToFront()
         {
-            if (!IsOpen) return;
+            var p = _proc;
             for (int i = 0; i < 40; i++) // the window appears a few seconds after start
             {
-                _proc.Refresh();
-                IntPtr h = _proc.MainWindowHandle;
+                if (p == null || p.HasExited) return;
+                p.Refresh();
+                IntPtr h;
+                try { h = p.MainWindowHandle; }
+                catch (InvalidOperationException) { return; } // exited in the meantime
                 if (h != IntPtr.Zero)
                 {
                     ShowWindow(h, 9); // restore if minimized
@@ -245,10 +274,17 @@ namespace KosherLink
             return newExe;
         }
 
-        public static bool CheckAndApply()
+        /// <param name="confirm">Gets the new version number; returning false skips the update until the next check.</param>
+        public static bool CheckAndApply(Func<string, bool> confirm = null)
         {
+            Config.Set("AppLastCheck", DateTime.UtcNow.ToString("o"));
             var i = Latest();
             if (!IsNewer(i)) return false;
+            if (confirm != null && !confirm(i.Version))
+            {
+                Log.Write("יש גרסה חדשה של התוכנה (" + i.Version + ") – המשתמש בחר לא לעדכן עכשיו");
+                return false;
+            }
 
             Log.Write("נמצאה גרסה חדשה של התוכנה: " + i.Version + " – מוריד...");
             string exe = Process.GetCurrentProcess().MainModule.FileName;

@@ -12,7 +12,7 @@ namespace KosherLink
 {
     static class Program
     {
-        public const string Version = "1.0.4";
+        public const string Version = "1.0.5";
         public const string AppName = "KosherLink";
 
         [STAThread]
@@ -69,6 +69,50 @@ namespace KosherLink
         }
     }
 
+    /// <summary>How often updates are checked (config UpdateEvery) and whether to ask first (UpdateAsk).</summary>
+    static class UpdatePolicy
+    {
+        public static readonly string[] Modes = { "day", "week", "month", "manual" };
+        public static readonly string[] Names = { "בדיקה כל יום (מומלץ)", "בדיקה פעם בשבוע", "בדיקה פעם בחודש", "רק ידנית" };
+
+        public static string Mode
+        {
+            get { string m = Config.Get("UpdateEvery", "day"); return Array.IndexOf(Modes, m) >= 0 ? m : "day"; }
+            set { Config.Set("UpdateEvery", value); }
+        }
+
+        public static bool Ask
+        {
+            get { return Config.GetBool("UpdateAsk"); }
+            set { Config.SetBool("UpdateAsk", value); }
+        }
+
+        /// <summary>Interval between checks, or null for manual only. In daily mode WhatsApp is checked twice a day.</summary>
+        static TimeSpan? Every(bool whatsapp)
+        {
+            switch (Mode)
+            {
+                case "manual": return null;
+                case "week": return TimeSpan.FromDays(7);
+                case "month": return TimeSpan.FromDays(30);
+                default: return TimeSpan.FromHours(whatsapp ? 12 : 24);
+            }
+        }
+
+        public static double DaysSince(string key)
+        {
+            DateTime last;
+            if (!DateTime.TryParse(Config.Get(key, ""), null, System.Globalization.DateTimeStyles.RoundtripKind, out last)) return double.MaxValue;
+            return (DateTime.UtcNow - last).TotalDays;
+        }
+
+        public static bool Due(string key, bool whatsapp)
+        {
+            var every = Every(whatsapp);
+            return every.HasValue && DaysSince(key) > every.Value.TotalDays;
+        }
+    }
+
     /// <summary>Lives next to the clock. Keeps the virtual phone running and up to date.</summary>
     class TrayApp : ApplicationContext
     {
@@ -82,7 +126,6 @@ namespace KosherLink
         int _busy; // 1 while a background job runs
         bool _exiting;
         SetupForm _setup;
-        DateTime _lastAppCheck = DateTime.MinValue;
 
         public TrayApp()
         {
@@ -96,6 +139,29 @@ namespace KosherLink
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_status);
             menu.Items.Add("בדוק עדכונים עכשיו", null, (s, e) => Job("עדכון", () => DoUpdates(true)));
+            var upd = new ToolStripMenuItem("הגדרות עדכון");
+            upd.DropDown.RightToLeft = RightToLeft.Yes;
+            var modeItems = new ToolStripMenuItem[UpdatePolicy.Modes.Length];
+            for (int i = 0; i < modeItems.Length; i++)
+            {
+                string mode = UpdatePolicy.Modes[i];
+                modeItems[i] = new ToolStripMenuItem(UpdatePolicy.Names[i], null, (s, e) =>
+                {
+                    UpdatePolicy.Mode = mode;
+                    if (mode == "manual")
+                        Program.Msg("העדכונים יותקנו רק כשתבחר \"בדוק עדכונים עכשיו\".\n\nשים לב: וואטסאפ מפסיק לעבוד בגרסאות ישנות מדי, ולכן כדאי לבדוק עדכונים לפחות פעם בחודש.", MessageBoxIcon.Information);
+                });
+                upd.DropDownItems.Add(modeItems[i]);
+            }
+            upd.DropDownItems.Add(new ToolStripSeparator());
+            var ask = new ToolStripMenuItem("שאל אותי לפני התקנת עדכון", null, (s, e) => UpdatePolicy.Ask = !UpdatePolicy.Ask);
+            upd.DropDownItems.Add(ask);
+            upd.DropDown.Opening += (s, e) =>
+            {
+                for (int i = 0; i < modeItems.Length; i++) modeItems[i].Checked = UpdatePolicy.Modes[i] == UpdatePolicy.Mode;
+                ask.Checked = UpdatePolicy.Ask;
+            };
+            menu.Items.Add(upd);
             var backup = new ToolStripMenuItem("גיבוי");
             backup.DropDown.RightToLeft = RightToLeft.Yes;
             backup.DropDownItems.Add("גבה עכשיו", null, (s, e) => Job("גיבוי", () => Notify(Backup.Run())));
@@ -128,7 +194,13 @@ namespace KosherLink
             _timer.Start();
 
             if (Config.GetBool("SetupDone")) Job("הפעלה", StartPhone);
-            else ShowSetup();
+            else
+            {
+                // While setup isn't finished the periodic checks don't run, so look for a fix of the program
+                // itself once at startup, before the user starts installing (it takes about a second).
+                if (UpdatePolicy.Due("AppLastCheck", false)) Task.Run(() => CheckAppUpdate());
+                ShowSetup();
+            }
         }
 
         void Ui(Action a)
@@ -182,28 +254,49 @@ namespace KosherLink
         void DoUpdates(bool force)
         {
             if (_exiting) return;
-            if (Emulator.IsRunning && Emulator.IsBooted && (force || WhatsAppAndroid.DueForCheck(TimeSpan.FromHours(12))))
+            if (Emulator.IsRunning && Emulator.IsBooted && (force || UpdatePolicy.Due("WaLastCheck", true)))
             {
                 SetStatus("בודק עדכון לוואטסאפ...", _iconBusy);
-                bool updated = WhatsAppAndroid.Update(false, null);
+                bool updated = WhatsAppAndroid.Update(false, null,
+                    UpdatePolicy.Ask ? () => Confirm("יש גרסה חדשה של וואטסאפ. לעדכן עכשיו?\n(העדכון לוקח כדקה, ובזמן הזה וואטסאפ במחשב עלול להתנתק לרגע)") : (Func<bool>)null);
                 if (updated) Notify("וואטסאפ עודכן לגרסה " + WhatsAppAndroid.InstalledVersion);
                 SetStatus("פועל", _iconOk);
             }
-            if (force || DateTime.Now - _lastAppCheck > TimeSpan.FromHours(24))
+            if (force || UpdatePolicy.Due("AppLastCheck", false)) CheckAppUpdate();
+            if (force) Notify("הבדיקה הסתיימה.");
+            else if (UpdatePolicy.Mode == "manual" && !_staleWarned && UpdatePolicy.DaysSince("WaLastCheck") > 30)
             {
-                _lastAppCheck = DateTime.Now;
-                try
-                {
-                    if (AppUpdater.CheckAndApply())
-                    {
-                        _exiting = true;
-                        Emulator.Stop();
-                        Ui(() => { _tray.Visible = false; Application.Exit(); });
-                    }
-                }
-                catch (Exception ex) { Log.Write("בדיקת עדכון לתוכנה נכשלה: " + ex.Message); }
+                _staleWarned = true;
+                Notify("לא נבדקו עדכונים כבר יותר מחודש. כדי שוואטסאפ ימשיך לעבוד, בחר \"בדוק עדכונים עכשיו\".");
             }
-            if (force) Notify("הבדיקה הסתיימה – הכל מעודכן.");
+        }
+
+        bool _staleWarned;
+
+        /// <summary>Yes/No question on the UI thread (safe to call from a background job).</summary>
+        bool Confirm(string text)
+        {
+            bool yes = false;
+            _ui.Invoke((Action)(() => yes = MessageBox.Show(text, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign) == DialogResult.Yes));
+            return yes;
+        }
+
+        /// <summary>Updates KosherLink itself from GitHub; on success the new version is started and this one exits.</summary>
+        void CheckAppUpdate()
+        {
+            try
+            {
+                if (AppUpdater.CheckAndApply(UpdatePolicy.Ask
+                    ? v => Confirm("יש גרסה חדשה של KosherLink (" + v + "). לעדכן עכשיו?\n(התוכנה תיסגר ותיפתח מחדש תוך כדקה)")
+                    : (Func<string, bool>)null))
+                {
+                    _exiting = true;
+                    if (Emulator.IsRunning) Emulator.Stop();
+                    Ui(() => { _tray.Visible = false; Application.Exit(); });
+                }
+            }
+            catch (Exception ex) { Log.Write("בדיקת עדכון לתוכנה נכשלה: " + ex.Message); }
         }
 
         void Watchdog()

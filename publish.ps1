@@ -109,7 +109,10 @@ if ($LASTEXITCODE -ne 0) { Fail "יצירת ה־Release נכשלה (הקוד כ�
 Remove-Item $notesFile
 
 # ---- 7. אימות: מה שההתקנות יראו
-$digest = (& gh.exe api "repos/$repo/releases/latest" --jq '.assets[] | select(.name=="KosherLink.exe") | .digest').Trim()
+# (בלי --jq: ב־PowerShell 5.1 גרשיים בתוך ארגומנט לא מגיעים לתוכנה החיצונית)
+$latest = (& gh.exe api "repos/$repo/releases/latest") -join "`n" | ConvertFrom-Json
+$digest = ($latest.assets | Where-Object { $_.name -eq 'KosherLink.exe' }).digest
+if ($latest.tag_name -ne "v$Version") { Fail "ב־GitHub הגרסה האחרונה היא $($latest.tag_name) ולא v$Version" }
 if ($digest -ne "sha256:$($hash.ToLower())") { Fail "ב־GitHub הקובץ האחרון לא תואם ($digest)" }
 Write-Host "`nגרסה $Version פורסמה: https://github.com/$repo/releases/tag/v$Version" -ForegroundColor Green
 Write-Host "כל ההתקנות יתעדכנו לבד תוך יום. כדי לעדכן מיד: קליק ימני על הסמל ← בדוק עדכונים עכשיו."
