@@ -286,6 +286,7 @@ namespace KosherLink
                     if (!Emulator.WaitBoot(600)) throw new Exception("הטלפון הווירטואלי לא עלה");
                     if (!wasRunning) Emulator.Tune();
                     if (!PhoneViewer.IsInstalled) PhoneViewer.Install(null);
+                    FilterCert.EnsureApplied();
                     PhoneViewer.Show();
                     SetStep(4, "⏳");
                 }

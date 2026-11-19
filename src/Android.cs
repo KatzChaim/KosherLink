@@ -344,6 +344,7 @@ namespace KosherLink
         {
             LowerPriority();
             ApplyLanguageAndTime();
+            FilterCert.EnsureApplied(); // internet-filter certificate, if the user has one
             foreach (var c in new[]
             {
                 "settings put global window_animation_scale 0",

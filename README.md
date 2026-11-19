@@ -83,6 +83,31 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 הבנייה משתמשת במהדר C# שמגיע עם Windows, כך שאין צורך להתקין כלום.
 
+## סינון אינטרנט
+
+מי שגולש דרך סינון (נטפרי, נטספארק, אתרוג, רימון ועוד) צריך שגם הטלפון הווירטואלי יכיר את **תעודת האבטחה של הסינון**.
+
+1. **אוטומטי, בלי לעשות כלום.** מי שגולש דרך סינון כבר התקין את התעודה ב־Windows. התוכנה מזהה אותה בכל הפעלה ומתקינה אותה בטלפון הווירטואלי לבד, עוד לפני הרישום.
+2. **התקנה נפרדת לפי הסינון.** אם התעודה לא זוהתה, מורידים מדף ה־[Releases](https://github.com/KatzChaim/KosherLink/releases/latest) את הקובץ של הסינון שלך ומפעילים אותו:
+
+   | סינון | קובץ להורדה |
+   |---|---|
+   | נטפרי | [KosherLink-filter-NetFree.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-NetFree.exe). אם התעודה לא מותקנת ב־Windows, הקובץ מוריד אותה מהאתר הרשמי של נטפרי |
+   | נטספארק | [KosherLink-filter-Netspark.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-Netspark.exe) |
+   | אתרוג | [KosherLink-filter-Etrog.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-Etrog.exe) |
+   | רימון | [KosherLink-filter-Rimon.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-Rimon.exe) |
+   | נועם | [KosherLink-filter-Noam.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-Noam.exe) |
+   | נתיב | [KosherLink-filter-Nativ.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink-filter-Nativ.exe) |
+
+   הקובץ מחפש את תעודת הסינון ב־Windows ומתקין אותה. אם הוא לא מוצא אותה, הוא מציע לבחור קובץ תעודה שהורדת מאתר הסינון.
+3. **כל סינון אחר:** בתפריט הסמל ← "תעודת סינון אינטרנט" ← "התקן מקובץ תעודה..." ← בוחרים את קובץ התעודה (`.crt`, `.cer` או `.pem`) מאתר הסינון.
+
+בתפריט הזה אפשר גם לראות איזו תעודה מותקנת, לכבות את הזיהוי האוטומטי ולהסיר את התעודות.
+
+**איך זה עובד:** התעודה נכנסת לאוסף התעודות של המערכת בטלפון הווירטואלי (`/system/etc/security/cacerts`), באותו מקום שמדריכי הסינון מתארים לאמולטורים, אבל בלי כלים חיצוניים. התוכנה מתקינה אותה מחדש אחרי כל הפעלה של הטלפון.
+
+**פרטיות:** תעודת סינון מאפשרת לסינון לבדוק את הגלישה מתוך הטלפון הווירטואלי. את תוכן ההודעות בוואטסאפ הוא לא יכול לראות, כי הן מוצפנות מקצה לקצה.
+
 ## אבטחה
 
 | מה מורידים | איך מוודאים שזה מקורי |

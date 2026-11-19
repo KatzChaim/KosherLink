@@ -185,6 +185,15 @@ namespace KosherLink
         {
             return Adb("-s " + Serial + " shell " + cmd, 60000);
         }
+
+        /// <summary>Switches adb to root (the plain AOSP image allows it); needed for system files and settings.</summary>
+        public static void Root()
+        {
+            if (Shell("id -u") == "0") return;
+            Adb("-s " + Serial + " root", 30000);
+            System.Threading.Thread.Sleep(2000);
+            Adb("-s " + Serial + " wait-for-device", 60000);
+        }
     }
 
     static class Net

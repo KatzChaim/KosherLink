@@ -104,6 +104,13 @@ if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path "$tmp\*" -DestinationPath $zip
 Remove-Item $tmp -Recurse -Force
 
+# מתקיני תעודת סינון: עותק של התוכנה בשם KosherLink-filter-<סינון>.exe מפעיל רק את התקנת התעודה של אותו סינון
+$filterIds = 'NetFree', 'Netspark', 'Etrog', 'Rimon', 'Noam', 'Nativ'
+$filterDir = 'dist\filters'
+if (Test-Path $filterDir) { Remove-Item $filterDir -Recurse -Force }
+New-Item -ItemType Directory $filterDir | Out-Null
+$filterFiles = foreach ($id in $filterIds) { $f = "$filterDir\KosherLink-filter-$id.exe"; Copy-Item $exe $f; $f }
+
 # ---- 5. GitHub: commit, תגית, push
 # מכאן והלאה רק תוכנות חיצוניות, שכותבות התקדמות ל־stderr. הכישלונות נבדקים לפי קוד היציאה
 $ErrorActionPreference = 'Continue'
@@ -120,10 +127,11 @@ Step "מפרסם Release"
 $body = "## KosherLink $Version`n`n"
 if ($Notes) { $body += "$Notes`n`n" }
 $body += "**להורדה:** ``KosherLink.exe``, או ``KosherLink.zip`` שכולל גם קובץ הוראות. מי שהתוכנה כבר מותקנת אצלו יקבל את העדכון לבד, תוך יום.`n`n"
+$body += "**תעודת סינון אינטרנט:** מי שגולש דרך סינון, אם התעודה לא זוהתה אוטומטית, מוריד ומפעיל את הקובץ של הסינון שלו: " + (($filterIds | ForEach-Object { "``KosherLink-filter-$_.exe``" }) -join ', ') + ". פרטים ב־[README](https://github.com/$repo#סינון-אינטרנט).`n`n"
 $body += "SHA-256 של ``KosherLink.exe``: ``$hash``"
 $notesFile = Join-Path $env:TEMP "kosherlink-notes.md"
 [IO.File]::WriteAllText($notesFile, $body, (New-Object Text.UTF8Encoding $false))
-& gh.exe release create "v$Version" $exe $sigFile $zip --repo $repo --title "KosherLink $Version" --notes-file $notesFile --verify-tag
+& gh.exe release create "v$Version" $exe $sigFile $zip @filterFiles --repo $repo --title "KosherLink $Version" --notes-file $notesFile --verify-tag
 if ($LASTEXITCODE -ne 0) { Fail "יצירת ה־Release נכשלה (הקוד כבר הועלה, אפשר להריץ שוב רק את gh release create)" }
 Remove-Item $notesFile
 
