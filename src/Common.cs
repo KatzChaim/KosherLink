@@ -196,10 +196,12 @@ namespace KosherLink
             psi.StandardErrorEncoding = Encoding.UTF8;
             var sb = new StringBuilder();
             using (var p = new Process())
+            using (var outDone = new System.Threading.ManualResetEvent(false))
+            using (var errDone = new System.Threading.ManualResetEvent(false))
             {
                 p.StartInfo = psi;
-                p.OutputDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); };
-                p.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); };
+                p.OutputDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); else outDone.Set(); };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); else errDone.Set(); };
                 p.Start();
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
@@ -209,7 +211,10 @@ namespace KosherLink
                     lock (sb) output = sb.ToString();
                     return -999;
                 }
-                p.WaitForExit();
+                // Wait for the rest of the output, but not forever: when adb has to start its background server, that
+                // server inherits the output pipes and keeps them open, so "end of output" may never come.
+                outDone.WaitOne(3000);
+                errDone.WaitOne(3000);
                 lock (sb) output = sb.ToString();
                 return p.ExitCode;
             }
