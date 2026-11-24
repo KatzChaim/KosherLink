@@ -278,6 +278,12 @@ namespace KosherLink
                     Thread.Sleep(20000);
                     if (IsRunning) { LowerPriority(); return; }
                     Log.Write("הטלפון הווירטואלי לא עלה (ניסיון " + attempt + "), מנסה שוב...");
+                    if (Speed.EffectiveGpu == "host")
+                    {
+                        // some PCs (old drivers, remote desktop) can't give the phone the graphics card: draw in software
+                        Config.SetBool("GpuFallback", true);
+                        Log.Write("כרטיס המסך לא זמין לטלפון – עובר לציור בתוכנה");
+                    }
                     Thread.Sleep(10000);
                 }
                 throw new Exception("הטלפון הווירטואלי לא מצליח לעלות. פרטים: " + Path.Combine(Paths.Root, "emulator.log"));
@@ -294,12 +300,18 @@ namespace KosherLink
                     string p = Path.Combine(avdDir, f);
                     try { if (Directory.Exists(p)) Directory.Delete(p, true); else if (File.Exists(p)) File.Delete(p); } catch { }
                 }
+                // a quick-boot state saved with other cores / memory / graphics does not fit: start fresh once
+                string sig = Speed.Signature;
+                bool fresh = Config.Get("LastSpeed", "") != sig;
+                if (fresh) Log.Write("מהירות הטלפון: " + Speed.Current.Name + " (" + sig + ") – הפעלה מלאה פעם אחת");
+                Config.Set("LastSpeed", sig);
                 string args = "-avd " + AndroidSdk.AvdName
                     + " -port " + Proc.ConsolePort
                     + " -no-window -no-audio -no-boot-anim -no-metrics"
-                    + " -gpu swiftshader_indirect"
+                    + " -gpu " + Speed.EffectiveGpu
                     + " -memory " + Config.RamMb
-                    + " -cores " + Config.Cores;
+                    + " -cores " + Config.Cores
+                    + (fresh ? " -no-snapshot-load" : "");
                 // the emulator's own output goes to a log file (helps diagnose problems)
                 var psi = Proc.Psi(Paths.EmulatorExe, args);
                 psi.RedirectStandardOutput = true;
@@ -316,12 +328,16 @@ namespace KosherLink
             }
         }
 
-        /// <summary>Gives the PC's own programs priority over the virtual phone.</summary>
+        /// <summary>
+        /// Normal priority while the phone window is open (or always, at the "fast" level); otherwise the PC's own
+        /// programs come first.
+        /// </summary>
         public static void LowerPriority()
         {
+            var prio = Speed.Current.AlwaysNormal || PhoneViewer.IsOpen ? ProcessPriorityClass.Normal : ProcessPriorityClass.BelowNormal;
             foreach (var p in OurQemu())
             {
-                try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
+                try { p.PriorityClass = prio; } catch { }
             }
         }
 

@@ -226,9 +226,11 @@ namespace KosherLink
             p.Exited += (s, e) =>
             {
                 try { Emulator.ScreenOff(); } catch { }
+                try { Emulator.LowerPriority(); } catch { } // window closed: back to low priority
                 try { lock (output) File.WriteAllLines(Path.Combine(Paths.Root, "scrcpy.log"), output); } catch { }
             };
             _proc = p;
+            Emulator.LowerPriority(); // window open: normal priority, so taps react quickly
             BringToFront();
             if (p.WaitForExit(3000) && p.ExitCode != 0)
             {

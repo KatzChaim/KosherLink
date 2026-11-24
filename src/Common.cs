@@ -92,9 +92,48 @@ namespace KosherLink
         public static int ApiLevel { get { return GetInt("ApiLevel", 30); } }
         // "default" = plain AOSP without Google services. ("aosp_atd" is smaller but does not draw app screens.)
         public static string ImageTag { get { return Get("ImageTag", "default"); } }
-        // 2048 is the emulator's own minimum for Android 11 (lower values are raised to 2048 anyway)
-        public static int RamMb { get { return GetInt("RamMb", 2048); } }
-        public static int Cores { get { return GetInt("Cores", 2); } }
+        // RAM / cores come from the speed level; RamMb / Cores in config.ini still override them (advanced).
+        public static int RamMb { get { return GetInt("RamMb", Speed.Current.RamMb); } }
+        public static int Cores { get { return GetInt("Cores", Speed.Current.Cores); } }
+    }
+
+    /// <summary>
+    /// The phone's speed level (menu → "מהירות הטלפון"). Measured on an i9 / UHD 630 (2026-11-24): 4 cores with the
+    /// graphics card was clearly the smoothest (scroll jank 12% vs 23-36%, WhatsApp opens in 0.9s vs 1.0-1.1s) and even
+    /// used less PC memory than software drawing; 6 cores was slower than 4, so "fast" stays at 4.
+    /// </summary>
+    class Speed
+    {
+        public string Id, Name;
+        public int Cores, RamMb;
+        public string Gpu;          // "host" = the PC's graphics card ("auto" picks software drawing when there is no window)
+        public bool AlwaysNormal;   // false = normal priority only while the phone window is open
+
+        public static readonly Speed[] All =
+        {
+            new Speed { Id = "eco", Name = "חסכוני – הכי קל למחשב", Cores = 2, RamMb = 2048, Gpu = "swiftshader_indirect", AlwaysNormal = false },
+            new Speed { Id = "balanced", Name = "מאוזן (מומלץ)", Cores = 4, RamMb = 3072, Gpu = "host", AlwaysNormal = false },
+            new Speed { Id = "fast", Name = "מהיר – למחשב חזק", Cores = 4, RamMb = 4096, Gpu = "host", AlwaysNormal = true },
+        };
+
+        public static Speed Current
+        {
+            get
+            {
+                string id = Config.Get("Speed", "balanced");
+                foreach (var s in All) if (s.Id == id) return s;
+                return All[1];
+            }
+        }
+
+        /// <summary>The graphics mode actually used: software drawing if the graphics card failed on this PC before.</summary>
+        public static string EffectiveGpu
+        {
+            get { return Current.Gpu == "host" && Config.GetBool("GpuFallback") ? "swiftshader_indirect" : Current.Gpu; }
+        }
+
+        /// <summary>What the phone is started with; when it changes, the saved quick-boot state no longer fits.</summary>
+        public static string Signature { get { return Config.Cores + "/" + Config.RamMb + "/" + EffectiveGpu; } }
     }
 
     static class Log

@@ -12,7 +12,7 @@ namespace KosherLink
 {
     static class Program
     {
-        public const string Version = "1.0.8";
+        public const string Version = "1.0.9";
         public const string AppName = "KosherLink";
 
         [STAThread]
@@ -210,6 +210,20 @@ namespace KosherLink
                 ask.Checked = UpdatePolicy.Ask;
             };
             menu.Items.Add(upd);
+            var speed = new ToolStripMenuItem("מהירות הטלפון");
+            speed.DropDown.RightToLeft = RightToLeft.Yes;
+            foreach (var lvl in Speed.All)
+            {
+                var item = new ToolStripMenuItem(lvl.Name) { Tag = lvl };
+                var chosen = lvl;
+                item.Click += (s, e) => ChangeSpeed(chosen);
+                speed.DropDownItems.Add(item);
+            }
+            speed.DropDown.Opening += (s, e) =>
+            {
+                foreach (ToolStripMenuItem i in speed.DropDownItems) i.Checked = ((Speed)i.Tag).Id == Speed.Current.Id;
+            };
+            menu.Items.Add(speed);
             var backup = new ToolStripMenuItem("גיבוי");
             backup.DropDown.RightToLeft = RightToLeft.Yes;
             backup.DropDownItems.Add("גבה עכשיו", null, (s, e) => Job("גיבוי", () => Notify(Backup.Run())));
@@ -386,6 +400,24 @@ namespace KosherLink
                 Config.Set("BackupLast", ""); // back up to the new place soon
                 Notify("הגיבויים יישמרו ב: " + Backup.Dir);
             }
+        }
+
+        void ChangeSpeed(Speed lvl)
+        {
+            if (lvl.Id == Speed.Current.Id) return;
+            bool restart = Emulator.IsRunning;
+            if (restart && !Program.Ask("להעביר את הטלפון למהירות \"" + lvl.Name + "\"?\n\n" +
+                    "הטלפון הווירטואלי יופעל מחדש (כדקה). וואטסאפ במחשב יתנתק לרגע ויחזור לבד.")) return;
+            Config.Set("Speed", lvl.Id);
+            Log.Write("מהירות הטלפון שונתה ל־" + lvl.Name);
+            if (!restart) { Notify("מהירות הטלפון: " + lvl.Name + ". תחול בהפעלה הבאה."); return; }
+            Job("שינוי מהירות", () =>
+            {
+                SetStatus("מפעיל מחדש במהירות החדשה...", _iconBusy);
+                Emulator.Stop();
+                StartPhone();
+                Notify("הטלפון פועל במהירות: " + lvl.Name);
+            });
         }
 
         void FullBackup()
