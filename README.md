@@ -3,6 +3,8 @@
 תוכנה קטנה ל־Windows 11 (כ־60KB) שמאפשרת להשתמש בוואטסאפ במחשב עם מספר של טלפון כשר.
 האימות נעשה **בשיחה קולית** לטלפון הכשר.
 
+> **היה לך וואטסאפ עם גיבוי ב־Google Drive, ואתה רוצה לשחזר אותו?** השתמש בגרסה [**KosherLink Google**](https://github.com/KatzChaim/KosherLink-Google). שם יש טלפון וירטואלי עם חשבון Google, והשחזור מ־Google Drive נבדק ועובד.
+
 ## ⬇️ הורדה והתקנה
 
 1. **[להורדת KosherLink.exe](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink.exe)** (הגרסה האחרונה תמיד). אפשר גם להוריד [חבילה עם קובץ הוראות](https://github.com/KatzChaim/KosherLink/releases/latest/download/KosherLink.zip).
